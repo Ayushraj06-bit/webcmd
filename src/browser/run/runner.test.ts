@@ -23,7 +23,12 @@ import { LocalBrowserRunArtifactSink } from './artifacts.js';
 import { MemorySnapshotBaselineStore } from '../snapshot/index.js';
 import { PlaywrightTransport, unsupportedApiMessage } from './playwright-transport.js';
 import { QuickJSHost } from './quickjs-host.js';
-import { DOWNLOAD_WAIT_TIMEOUT_HINT, POPUP_WAIT_TIMEOUT_HINT, runBrowserProgram } from './runner.js';
+import {
+  DOWNLOAD_WAIT_TIMEOUT_HINT,
+  POPUP_WAIT_TIMEOUT_HINT,
+  SET_CONTENT_TIMEOUT_HINT,
+  runBrowserProgram,
+} from './runner.js';
 
 const playwrightServer = createRequire(import.meta.url)(
   'playwright-core/lib/coreBundle',
@@ -996,6 +1001,86 @@ afterAll(async () => {
     expect(POPUP_WAIT_TIMEOUT_HINT).toContain('data:');
     expect(POPUP_WAIT_TIMEOUT_HINT).toContain('context.newPage()');
     expect(POPUP_WAIT_TIMEOUT_HINT).not.toMatch(/page\.goto on the current page/);
+  });
+
+  // page.setContent() applies the markup and then never settles on the local Cloak
+  // runtime, because Playwright resolves it on a console sentinel Cloak never emits.
+  // The run burns its whole budget on the first statement, so a generic "increase
+  // --timeout" sends the caller back around the same 30s wall.
+  it('tells the caller to navigate instead when a run that sets content times out', async () => {
+    await expect(run(`
+      await page.setContent('<p>content</p>');
+      await new Promise(() => {});
+    `, { timeoutMs: 25 })).rejects.toMatchObject({
+      code: 'BROWSER_RUN_TIMEOUT',
+      hint: SET_CONTENT_TIMEOUT_HINT,
+    });
+  });
+
+  it('types a setContent timeout as a browser-run timeout', async () => {
+    // A subresource that never answers keeps the load event pending, which is the
+    // shape Cloak produces for every setContent call.
+    const server = http.createServer(() => {});
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as import('node:net').AddressInfo;
+    try {
+      await expect(run(`
+        await page.setContent('<img src="http://127.0.0.1:${port}/hang">', { timeout: 50 });
+      `)).rejects.toMatchObject({
+        code: 'BROWSER_RUN_TIMEOUT',
+        hint: SET_CONTENT_TIMEOUT_HINT,
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it('keeps the popup hint for a timed-out program that also sets content', async () => {
+    await expect(run(`
+      await page.setContent('<p>content</p>');
+      await page.waitForEvent('popup');
+    `, { timeoutMs: 25 })).rejects.toMatchObject({
+      code: 'BROWSER_RUN_TIMEOUT',
+      hint: POPUP_WAIT_TIMEOUT_HINT,
+    });
+  });
+
+  it('leaves a timeout with no setContent call on the generic hint', async () => {
+    await expect(run(`
+      await new Promise(() => {});
+    `, { timeoutMs: 25 })).rejects.toMatchObject({
+      code: 'BROWSER_RUN_TIMEOUT',
+      hint: expect.stringContaining('increase --timeout'),
+    });
+  });
+
+  it('does not retype a non-timeout failure that merely names setContent', async () => {
+    const error = await runError("throw new Error('page.setContent(html) rejected upstream');");
+
+    expect(error.code).toBeUndefined();
+    expect(error.message).toContain('page.setContent(html) rejected upstream');
+  });
+
+  it('does not retype a setContent failure that is not a timeout', async () => {
+    // A detached frame logs the same "setting frame content" line as a timeout does.
+    const error = await runError(
+      "throw new Error('Frame was detached\\nCall log:\\n  - setting frame content, waiting until \"load\"');",
+    );
+
+    expect(error.code).toBeUndefined();
+    expect(error.message).toContain('Frame was detached');
+  });
+
+  it('names the document.write recovery in the setContent hint', () => {
+    // The content is already in the page when this fires, so an agent told only to
+    // retry re-runs a call that can never return. This is the recovery CloakBrowser
+    // publishes on CloakHQ/cloakbrowser#360, and unlike a data: URL it keeps the
+    // page on its current origin.
+    expect(SET_CONTENT_TIMEOUT_HINT).toContain('document.write(html)');
+    expect(SET_CONTENT_TIMEOUT_HINT).toContain('waitForLoadState');
+    expect(SET_CONTENT_TIMEOUT_HINT).toContain('Cloak');
+    expect(SET_CONTENT_TIMEOUT_HINT).not.toMatch(/increase --timeout/);
   });
 
   it('cancels an in-flight run through its abort signal', async () => {

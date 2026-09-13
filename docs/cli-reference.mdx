@@ -73,6 +73,20 @@ passively inspect request and response events. They cannot access Node.js, the
 filesystem, environment variables, raw CDP endpoints, browser launch APIs,
 browser-context ownership, or `context.newPage()`.
 
+On the local Cloak runtime, `page.setContent()` applies the markup but never
+resolves, because Playwright settles that call on a console event Cloak does not
+emit. Write the markup directly instead, which keeps the page on its current
+origin:
+
+```js
+await page.evaluate(html => {
+  document.open();
+  document.write(html);
+  document.close();
+}, html);
+await page.waitForLoadState('load');
+```
+
 The public browser surface is `tabs`, `bind`, `run`, and `snapshot`.
 
 ## Direct URL Fetch

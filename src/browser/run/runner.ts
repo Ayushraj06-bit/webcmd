@@ -63,6 +63,11 @@ export const POPUP_WAIT_TIMEOUT_HINT = [
   'Recovery is the same either way: open a tracked tab with context.newPage(), then goto the destination URL on that new page. Do not page.goto on the opener.',
   "Cap waitForEvent('popup') with a short timeout instead of the default.",
 ].join(' ');
+export const SET_CONTENT_TIMEOUT_HINT = [
+  'page.setContent() never resolves on the local Cloak runtime.',
+  'Playwright settles it on a console sentinel it writes next to the markup, and Cloak emits no console events, so the HTML is applied but the call hangs until the run limit — the page may already hold the content.',
+  'Write it directly instead: await page.evaluate(html => { document.open(); document.write(html); document.close(); }, html), then await page.waitForLoadState("load").',
+].join(' ');
 const NO_CAPTURE_HINT = 'The program completed without captured evidence; return structured data, console.log concise evidence, or call writeArtifact(filename, bytes) to save files.';
 const NODE_SANDBOX_HINT = 'Node require/fs are not available inside browser run. Use Playwright page/context/browser APIs, page.request for HTTP, or writeArtifact(filename, bytes) for files.';
 
@@ -76,9 +81,24 @@ function isPopupOrNewTabWait(text: string): boolean {
     || /waitForEvent\(\s*['"](?:popup|page)['"]\s*\)/.test(text);
 }
 
-function timeoutKind(message: string, source?: string): 'popup' | 'download' | undefined {
+// Split in two because, unlike a popup or download wait, a bare `.setContent(` says nothing
+// about timing out: it must only classify a program's source, never an arbitrary message.
+// The sandbox client reports the bare `Timeout 200ms exceeded.` without the `page.setContent:`
+// prefix the Node client adds, so the call log is what identifies the call — and a detached
+// frame or a closed target logs that same line, so the timeout itself has to be there too.
+function isSetContentTimeout(text: string): boolean {
+  return /setting frame content/i.test(text) && /timeout .*exceeded/i.test(text);
+}
+
+function callsSetContent(source: string): boolean {
+  return /\.setContent\(/.test(source);
+}
+
+// setContent is checked last so popup and download keep the timeout they already claim.
+function timeoutKind(message: string, source?: string): 'popup' | 'download' | 'setContent' | undefined {
   if (isPopupOrNewTabWait(message) || (source !== undefined && isPopupOrNewTabWait(source))) return 'popup';
   if (isDownloadWait(message) || (source !== undefined && isDownloadWait(source))) return 'download';
+  if (isSetContentTimeout(message) || (source !== undefined && callsSetContent(source))) return 'setContent';
   return undefined;
 }
 
@@ -97,6 +117,11 @@ function timeoutRunError(message: string, source?: string): BrowserRunError {
       isDownloadWait(message) ? message : 'Browser-run timed out waiting for a download.',
       DOWNLOAD_WAIT_TIMEOUT_HINT,
     );
+  }
+  // The source only proves the program calls setContent, not that it hung there, so the
+  // timeout keeps its own message and gains the hint.
+  if (kind === 'setContent') {
+    return new BrowserRunError('BROWSER_RUN_TIMEOUT', message, SET_CONTENT_TIMEOUT_HINT);
   }
   return new BrowserRunError('BROWSER_RUN_TIMEOUT', message, GENERIC_TIMEOUT_HINT);
 }
@@ -162,7 +187,7 @@ function normalizeExecutionError(error: unknown): Error {
       NODE_SANDBOX_HINT,
     );
   }
-  if (isPopupOrNewTabWait(message) || isDownloadWait(message)) {
+  if (isPopupOrNewTabWait(message) || isDownloadWait(message) || isSetContentTimeout(message)) {
     return timeoutRunError(sanitize(message));
   }
   if (/interrupted|execution timeout|timed out/i.test(message)) {
