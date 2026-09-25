@@ -1003,10 +1003,8 @@ afterAll(async () => {
     expect(POPUP_WAIT_TIMEOUT_HINT).not.toMatch(/page\.goto on the current page/);
   });
 
-  // page.setContent() applies the markup and then never settles on the local Cloak
-  // runtime, because Playwright resolves it on a console sentinel Cloak never emits.
-  // The run burns its whole budget on the first statement, so a generic "increase
-  // --timeout" sends the caller back around the same 30s wall.
+  // Some local Cloak builds apply markup before setContent settles; the timeout
+  // may also come from a later operation, so the recovery must be conditional.
   it('tells the caller to navigate instead when a run that sets content times out', async () => {
     await expect(run(`
       await page.setContent('<p>content</p>');
@@ -1018,8 +1016,7 @@ afterAll(async () => {
   });
 
   it('types a setContent timeout as a browser-run timeout', async () => {
-    // A subresource that never answers keeps the load event pending, which is the
-    // shape Cloak produces for every setContent call.
+    // A subresource that never answers keeps the load event pending on stock Chromium too.
     const server = http.createServer(() => {});
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address() as import('node:net').AddressInfo;
@@ -1073,13 +1070,13 @@ afterAll(async () => {
   });
 
   it('names the document.write recovery in the setContent hint', () => {
-    // The content is already in the page when this fires, so an agent told only to
-    // retry re-runs a call that can never return. This is the recovery CloakBrowser
-    // publishes on CloakHQ/cloakbrowser#360, and unlike a data: URL it keeps the
-    // page on its current origin.
+    // The recovery is relevant to affected Cloak builds and keeps the page on
+    // its current origin, but a timeout alone cannot establish that diagnosis.
     expect(SET_CONTENT_TIMEOUT_HINT).toContain('document.write(html)');
     expect(SET_CONTENT_TIMEOUT_HINT).toContain('waitForLoadState');
     expect(SET_CONTENT_TIMEOUT_HINT).toContain('Cloak');
+    expect(SET_CONTENT_TIMEOUT_HINT).toMatch(/If.*Cloak/i);
+    expect(SET_CONTENT_TIMEOUT_HINT).not.toMatch(/page\.setContent\(\) never resolves/);
     expect(SET_CONTENT_TIMEOUT_HINT).not.toMatch(/increase --timeout/);
   });
 

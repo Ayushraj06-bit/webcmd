@@ -73,10 +73,10 @@ passively inspect request and response events. They cannot access Node.js, the
 filesystem, environment variables, raw CDP endpoints, browser launch APIs,
 browser-context ownership, or `context.newPage()`.
 
-On the local Cloak runtime, `page.setContent()` applies the markup but never
-resolves, because Playwright settles that call on a console event Cloak does not
-emit. Write the markup directly instead, which keeps the page on its current
-origin:
+On some local Cloak builds, `page.setContent()` can apply the markup without
+resolving because Playwright waits for a console event that build does not emit.
+If the call times out, inspect the page before retrying. For this Cloak case,
+write the markup directly to keep the page on its current origin:
 
 ```js
 await page.evaluate(html => {

@@ -64,9 +64,8 @@ export const POPUP_WAIT_TIMEOUT_HINT = [
   "Cap waitForEvent('popup') with a short timeout instead of the default.",
 ].join(' ');
 export const SET_CONTENT_TIMEOUT_HINT = [
-  'page.setContent() never resolves on the local Cloak runtime.',
-  'Playwright settles it on a console sentinel it writes next to the markup, and Cloak emits no console events, so the HTML is applied but the call hangs until the run limit — the page may already hold the content.',
-  'Write it directly instead: await page.evaluate(html => { document.open(); document.write(html); document.close(); }, html), then await page.waitForLoadState("load").',
+  'If this timed out in page.setContent() on a local Cloak build, the markup may already be applied while Playwright waits for a console event that build does not emit.',
+  'Check the page before retrying. For that Cloak case, write the markup directly instead: await page.evaluate(html => { document.open(); document.write(html); document.close(); }, html), then await page.waitForLoadState("load").',
 ].join(' ');
 const NO_CAPTURE_HINT = 'The program completed without captured evidence; return structured data, console.log concise evidence, or call writeArtifact(filename, bytes) to save files.';
 const NODE_SANDBOX_HINT = 'Node require/fs are not available inside browser run. Use Playwright page/context/browser APIs, page.request for HTTP, or writeArtifact(filename, bytes) for files.';
